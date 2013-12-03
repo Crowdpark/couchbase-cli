@@ -1,12 +1,21 @@
-#!/usr/bin/env python
-# -*-python-*-
+#! /bin/sh
+#prefix=/opt/couchbase
+prefix=./
+exec_prefix=${prefix}
+root=${exec_prefix}/lib/python
 
-"""
-Backup tool for Couchbase.
-"""
+if test -z "${PYTHONPATH}"; then
+   PYTHONPATH=$root
+else
+   PYTHONPATH=$root:${PYTHONPATH}
+fi
+export PYTHONPATH
 
-import pump_transfer
-import sys
+if test -z "${LD_LIBRARY_PATH}"; then
+   LD_LIBRARY_PATH=${prefix}/lib
+else
+   LD_LIBRARY_PATH=${prefix}/lib:${LD_LIBRARY_PATH}
+fi
+export LD_LIBRARY_PATH
 
-if __name__ == '__main__':
-    pump_transfer.exit_handler(pump_transfer.Backup().main(sys.argv))
+exec "$root"/`basename "$0"` "$@"
