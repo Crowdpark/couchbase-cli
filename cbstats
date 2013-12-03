@@ -1,5 +1,6 @@
 #! /bin/sh
-prefix=/opt/couchbase
+#prefix=/opt/couchbase
+prefix=./
 exec_prefix=${prefix}
 root=${exec_prefix}/lib/python
 
