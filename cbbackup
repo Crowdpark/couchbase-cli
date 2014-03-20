@@ -1,6 +1,6 @@
-#! /bin/sh
+#! /bin/bash
 #prefix=/opt/couchbase
-prefix=./
+prefix="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 exec_prefix=${prefix}
 root=${exec_prefix}/lib/python
 
