@@ -31,6 +31,7 @@ rest_cmds = {
     'setting-alert'         :'/settings/alerts',
     'user-manage'           :'/settings/readOnlyUser',
     'group-manage'          :'/pools/default/serverGroups',
+    'ssl-manage'            :'/pools/default/certificate',
 }
 
 server_no_remove = [
@@ -65,6 +66,7 @@ methods = {
     'setting-alert'         :'POST',
     'user-manage'           :'POST',
     'group-manage'          :'POST',
+    'ssl-manage'            :'GET',
 }
 
 bool_to_str = lambda value: str(bool(int(value))).lower()
@@ -73,6 +75,7 @@ bool_to_str = lambda value: str(bool(int(value))).lower()
 # handling HTTP response properly
 
 class Node:
+    SEP = ";"
     def __init__(self):
         self.rest_cmd = rest_cmds['rebalance-status']
         self.method = 'GET'
@@ -87,6 +90,8 @@ class Node:
         self.output = 'standard'
         self.password_new = None
         self.username_new = None
+        self.sa_username = None
+        self.sa_password = None
         self.port_new = None
         self.per_node_quota = None
         self.data_path = None
@@ -127,11 +132,13 @@ class Node:
 
         #group management
         self.group_name = None
-        self.server_list = None
+        self.server_list = []
         self.from_group = None
         self.to_group = None
         self.group_rename = None
 
+        #SSL certificate management
+        self.certificate_file = None
         self.cmd = None
 
     def runCmd(self, cmd, server, port,
@@ -157,53 +164,59 @@ class Node:
                   " or use -h for more help.")
 
         if cmd in ('server-add', 'rebalance'):
-            self.addServers(servers['add'])
+            if not self.group_name:
+                self.addServers(servers['add'])
+            else:
+                self.groupAddServers()
             if cmd == 'rebalance':
                 self.rebalance(servers)
 
-        if cmd == 'server-readd':
+        elif cmd == 'server-readd':
             self.reAddServers(servers)
 
-        if cmd == 'rebalance-status':
+        elif cmd == 'rebalance-status':
             output_result = self.rebalanceStatus()
             print output_result
 
-        if cmd == 'rebalance-stop':
+        elif cmd == 'rebalance-stop':
             output_result = self.rebalanceStop()
             print output_result
 
-        if cmd == 'failover':
+        elif cmd == 'failover':
             if len(servers['failover']) <= 0:
                 usage("please list one or more --server-failover=HOST[:PORT];"
                       " or use -h for more help.")
 
             self.failover(servers)
 
-        if cmd in ('cluster-init', 'cluster-edit'):
-            self.clusterInit()
+        elif cmd in ('cluster-init', 'cluster-edit'):
+            self.clusterInit(cmd)
 
-        if cmd == 'node-init':
+        elif cmd == 'node-init':
             self.nodeInit()
 
-        if cmd == 'setting-compaction':
+        elif cmd == 'setting-compaction':
             self.compaction()
 
-        if cmd == 'setting-notification':
+        elif cmd == 'setting-notification':
             self.notification()
 
-        if cmd == 'setting-alert':
+        elif cmd == 'setting-alert':
             self.alert()
 
-        if cmd == 'setting-autofailover':
+        elif cmd == 'setting-autofailover':
             self.autofailover()
 
-        if cmd == 'user-manage':
+        elif cmd == 'user-manage':
             self.userManage()
 
-        if cmd == 'group-manage':
+        elif cmd == 'group-manage':
             self.groupManage()
 
-    def clusterInit(self):
+        elif cmd == 'ssl-manage':
+            self.retrieveCert()
+
+    def clusterInit(self, cmd):
         rest = restclient.RestClient(self.server,
                                      self.port,
                                      {'debug':self.debug})
@@ -235,12 +248,10 @@ class Node:
                                      self.user,
                                      self.password,
                                      opts)
-
         # per node quota unfortunately runs against a different location
-        if not self.per_node_quota:
+        if cmd == "cluster-init" and not self.per_node_quota:
             print "ERROR: option cluster-init-ramsize is not specified"
             return
-
         if self.port_new:
             self.port = int(self.port_new)
         if self.username_new:
@@ -477,16 +488,15 @@ class Node:
                     a = socket.gethostbyname(socket.getfqdn())
                 server = "%s:%d" % util.hostport(a)
                 servers['add'][server] = { 'user':'', 'password':''}
+                self.server_list.append(server)
             elif o == "--server-add-username":
-                if server is None:
-                    usage("please specify --server-add"
-                          " before --server-add-username")
-                servers['add'][server]['user'] = a
+                if server:
+                    servers['add'][server]['user'] = a
+                self.sa_username = a
             elif o == "--server-add-password":
-                if server is None:
-                    usage("please specify --server-add"
-                          " before --server-add-password")
-                servers['add'][server]['password'] = a
+                if server:
+                    servers['add'][server]['password'] = a
+                self.sa_password = a
             elif o in ( "-r", "--server-remove"):
                 server = "%s:%d" % util.hostport(a)
                 servers['remove'][server] = True
@@ -587,13 +597,13 @@ class Node:
             elif o == '--group-name':
                 self.group_name = a
             elif o == '--add-servers':
-                self.server_list = a
+                self.server_list = self.normalize_servers(a)
                 self.cmd = 'add-servers'
             elif o == '--remove-servers':
-                self.server_list = a
+                self.server_list = self.normalize_servers(a)
                 self.cmd = 'remove-servers'
             elif o == '--move-servers':
-                self.server_list = a
+                self.server_list = self.normalize_servers(a)
                 self.cmd = 'move-servers'
             elif o == '--from-group':
                 self.from_group = a
@@ -602,8 +612,21 @@ class Node:
             elif o == '--rename':
                 self.group_rename = a
                 self.cmd = 'rename'
+            elif o == '--retrieve-cert':
+                self.cmd = 'retrieve'
+                self.certificate_file = a
+            elif o == '--regenerate-cert':
+                self.cmd = 'regenerate'
+                self.certificate_file = a
 
         return servers
+
+    def normalize_servers(self, server_list):
+        slist = []
+        for server in server_list.split(Node.SEP):
+            hostport = "%s:%d" % util.hostport(server)
+            slist.append(hostport)
+        return slist
 
     def addServers(self, servers):
         for server in servers:
@@ -881,7 +904,7 @@ class Node:
             elif self.cmd == 'create':
                 self.groupCreate()
             elif self.cmd == 'add-servers':
-                self.groupAddServers(self.group_name)
+                self.groupAddServers()
             elif self.cmd == 'rename':
                 self.groupRename()
             else:
@@ -920,10 +943,15 @@ class Node:
                                      self.user,
                                      self.password)
         groups = rest.getJson(output_result)
+        found = False
         for group in groups["groups"]:
-            print '%s' % group['name']
-            for node in group['nodes']:
-                print ' server: %s' % node["hostname"]
+            if self.group_name is None or self.group_name == group['name']:
+                found = True
+                print '%s' % group['name']
+                for node in group['nodes']:
+                    print ' server: %s' % node["hostname"]
+        if not found and self.group_name:
+            print "Invalid group name: %s" % self.group_name
 
     def groupCreate(self):
         rest = restclient.RestClient(self.server,
@@ -983,20 +1011,22 @@ class Node:
                                      opts)
         print output_result
 
-    def groupAddServers(self, name):
+    def groupAddServers(self):
 
         uri = self.getGroupUri(self.group_name)
         if uri is None:
             usage("invalid group name:%s" % self.group_name)
         uri = "%s/addNode" % uri
         groups = self.getServerGroups()
-        server_list = self.server_list.split(";")
-
-        rest = restclient.RestClient(self.server,
+        for server in self.server_list:
+            rest = restclient.RestClient(self.server,
                                      self.port,
                                      {'debug':self.debug})
-        for server in server_list:
             rest.setParam('hostname', server)
+            if self.sa_username:
+                rest.setParam('user', self.sa_username)
+            if self.sa_password:
+                rest.setParam('password', self.sa_password)
 
             opts = {
                 'error_msg': "unable to add server '%s' to group '%s'" % (server, self.group_name),
@@ -1014,8 +1044,7 @@ class Node:
         node_info = {}
         for group in groups["groups"]:
             if self.from_group == group['name']:
-                server_list = self.server_list.split(";")
-                for server in server_list:
+                for server in self.server_list:
                     for node in group["nodes"]:
                         if server == node["hostname"]:
                             node_info[server] = node
@@ -1026,8 +1055,7 @@ class Node:
 
         for group in groups["groups"]:
             if self.to_group == group['name']:
-                server_list = self.server_list.split(";")
-                for server in server_list:
+                for server in self.server_list:
                     found = False
                     for node in group["nodes"]:
                         if server == node["hostname"]:
@@ -1035,6 +1063,7 @@ class Node:
                             break
                     if not found:
                         group["nodes"].append(node_info[server])
+
         payload = json.dumps(groups)
         rest = restclient.RestClient(self.server,
                                      self.port,
@@ -1051,3 +1080,43 @@ class Node:
                                      self.password,
                                      opts)
         print output_result
+
+    def retrieveCert(self):
+        if self.certificate_file is None:
+            usage("please specify certificate file name for the operation")
+
+        rest = restclient.RestClient(self.server,
+                                     self.port,
+                                     {'debug':self.debug})
+        output_result = ''
+        if self.cmd == 'retrieve':
+            opts = {
+                'error_msg': "unable to %s certificate" % self.cmd,
+                'success_msg': "Successfully %s certificate" % self.cmd
+            }
+            output_result = rest.restCmd('GET',
+                                         '/pools/default/certificate',
+                                        self.user,
+                                        self.password,
+                                        opts)
+        elif self.cmd  == 'regenerate':
+            opts = {
+                'error_msg': "unable to %s certificate" % self.cmd,
+                'success_msg': None
+            }
+            output_result = rest.restCmd('POST',
+                                         '/controller/regenerateCertificate',
+                                        self.user,
+                                        self.password,
+                                        opts)
+        else:
+            print "ERROR: unknown request:", self.cmd
+            return
+
+        try:
+            fp = open(self.certificate_file, 'w')
+            fp.write(output_result)
+            fp.close()
+            print "SUCCESS: %s certificate to '%s'" % (self.cmd, self.certificate_file)
+        except IOError, error:
+            print "ERROR:", error

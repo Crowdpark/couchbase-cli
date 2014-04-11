@@ -34,6 +34,8 @@ class XDCR:
         self.replicator = ''
         self.params = {}
         self.output = 'standard'
+        self.demand_encryption = ''
+        self.certificate = ''
 
         self.from_bucket = ''
         self.to_bucket = ''
@@ -74,18 +76,19 @@ class XDCR:
             print "INFO: servers %s" % servers
 
         if cmd == 'xdcr-setup':
-            if self.cmd == 'create':
-                self.setup_create()
-            elif self.cmd == 'edit':
-                self.setup_edit()
+            if self.cmd in('create', 'edit'):
+                self.setup_create(self.cmd)
             elif self.cmd == 'delete':
                 self.setup_delete()
-
         if cmd == 'xdcr-replicate':
             if self.cmd == 'create':
                 self.replicate_start()
             elif self.cmd == 'delete':
                 self.replicate_stop()
+            elif self.cmd == 'list':
+                self.replicate_list()
+            else:
+                print "ERROR: unsupported replicate command:", cmd
 
         if cmd == 'setting-xdcr':
             self.setting()
@@ -123,6 +126,8 @@ class XDCR:
                 self.cmd = 'edit'
             elif o == '--delete':
                 self.cmd = 'delete'
+            elif o == '--list':
+                self.cmd = 'list'
             elif o == '--max-concurrent-reps':
                 self.max_stream = int(a)
             elif o == '--checkpoint-interval':
@@ -135,15 +140,27 @@ class XDCR:
                 self.failure_restart_interval = int(a)
             elif o == '--optimistic-replication-threshold':
                 self.optimistic_replication_threshold = int(a)
+            elif o == '--xdcr-demand-encryption':
+                self.demand_encryption = int(a)
+            elif o == '--xdcr-certificate':
+                self.certificate = a
 
-    def setup_create(self):
+    def setup_create(self, cmd):
         rest = restclient.RestClient(self.server,
                                      self.port,
                                      {'debug':self.debug})
+
         if self.remote_cluster:
             rest.setParam('name', self.remote_cluster)
+            if cmd == 'edit':
+                self.rest_cmd = self.rest_cmd + "/" + urllib.quote(self.remote_cluster)
         else:
-            rest.setParam('name', 'remote cluster')
+            if cmd == 'edit':
+                print "Error: Cluster name is needed to edit cluster connections"
+                return
+            else:
+                rest.setParam('name', 'remote cluster')
+
         if self.remote_hostname:
             rest.setParam('hostname', self.remote_hostname)
         else:
@@ -158,45 +175,31 @@ class XDCR:
             rest.setParam('password', self.remote_password)
         else:
             rest.setParam('password', "password")
+
+        if self.demand_encryption:
+            rest.setParam("demandEncryption", self.demand_encryption)
+            if self.certificate:
+                if os.path.isfile(self.certificate):
+                    try:
+                        fp = open(self.certificate, 'r')
+                        raw_data = fp.read()
+                        fp.close()
+                        rest.setParam("certificate", raw_data)
+                    except IOError, error:
+                        print "Error:", error
+                        return
+                else:
+                    print "ERROR: Fail to open certificate file from %s" % self.certificate
+                    return
+            else:
+                print "ERROR: certificate required if encryption is demanded."
+                return
+        else:
+            rest.setParam("demandEncryption", str(int(0)))
 
         opts = {
             'error_msg': "unable to set up xdcr remote site %s" % self.remote_cluster,
-            'success_msg': "init %s" % self.remote_cluster
-        }
-        output_result = rest.restCmd('POST',
-                                     self.rest_cmd,
-                                     self.user,
-                                     self.password,
-                                     opts)
-        print output_result
-
-    def setup_edit(self):
-        rest = restclient.RestClient(self.server,
-                                     self.port,
-                                     {'debug':self.debug})
-        if self.remote_cluster:
-            rest.setParam('name', self.remote_cluster)
-            self.rest_cmd = self.rest_cmd + "/" + self.remote_cluster
-        else:
-            print "Error: Cluster name is needed to edit cluster connections"
-            return
-        if self.remote_hostname:
-            rest.setParam('hostname', self.remote_hostname)
-        else:
-            print "Error: hostname (ip) is missing"
-            return
-        if self.remote_username:
-            rest.setParam('username', self.remote_username)
-        else:
-            rest.setParam('username', "username")
-        if self.remote_password:
-            rest.setParam('password', self.remote_password)
-        else:
-            rest.setParam('password', "password")
-
-        opts = {
-            'error_msg': "unable to edit xdcr remote site %s" % self.remote_cluster,
-            'success_msg': "edit cluster %s" % self.remote_cluster
+            'success_msg': "init/edit %s" % self.remote_cluster
         }
         output_result = rest.restCmd('POST',
                                      self.rest_cmd,
@@ -210,7 +213,7 @@ class XDCR:
                                      self.port,
                                      {'debug':self.debug})
         if self.remote_cluster:
-            self.rest_cmd = self.rest_cmd + "/" + self.remote_cluster
+            self.rest_cmd = self.rest_cmd + "/" + urllib.quote(self.remote_cluster)
         else:
             print "Error: Cluster name is needed to delete cluster connections"
             return
@@ -275,6 +278,28 @@ class XDCR:
                                      self.password,
                                      opts)
         print output_result
+
+    def replicate_list(self):
+        rest = restclient.RestClient(self.server,
+                                     self.port,
+                                     {'debug':self.debug})
+
+        opts = {
+            'error_msg': "unable to retrieve any replication streams",
+            'success_msg': "list replication streams"
+        }
+        output_result = rest.restCmd('GET',
+                                     '/pools/default/tasks',
+                                     self.user,
+                                     self.password,
+                                     opts)
+        tasks = rest.getJson(output_result)
+        for task in tasks:
+            if task["type"] == "xdcr":
+                print 'stream id: %s' % task['id']
+                print "   status: %s" % task["status"]
+                print "   source: %s" % task["source"]
+                print "   target: %s" % task["target"]
 
     def setting(self):
         rest = restclient.RestClient(self.server,

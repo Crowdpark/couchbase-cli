@@ -62,7 +62,7 @@ class RestClient:
         """ parse response in standard way.
             """
         if response.status in [200, 201, 202, 204, 302]:
-            if method == 'GET':
+            if method == 'GET' or not opts['success_msg']:
                 return response.read()
 
             return "SUCCESS: %s" % opts['success_msg']
@@ -139,8 +139,7 @@ class RestClient:
             print "ENCODED_PARAMS: %s" % encoded_params
             print "REST CMD: %s %s" % (method,uri)
 
-        self.makeRequest(method, urllib.quote(uri), encoded_params, headers)
-
+        self.makeRequest(method, uri, encoded_params, headers)
         response = self.conn.getresponse()
         if self.debug:
             print "response.status: %s" % response.status
